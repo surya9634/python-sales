@@ -1,15 +1,15 @@
 import os
-from flask import Flask, redirect, request, session, jsonify
+from flask import Flask, redirect, request, session
 import requests
 from urllib.parse import urlencode
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", "supersecretkey")
+app.secret_key = "supersecretkey"  # change this to anything random for sessions
 
-# === CONFIG ===
-FB_APP_ID = os.environ.get("FB_APP_ID", "YOUR_FB_APP_ID")
-FB_APP_SECRET = os.environ.get("FB_APP_SECRET", "YOUR_FB_APP_SECRET")
-FB_REDIRECT_URI = os.environ.get("FB_REDIRECT_URI", "http://localhost:5000/callback")
+# === HARDCODED CONFIG ===
+FB_APP_ID = "2101110903689615"
+FB_APP_SECRET = "822f24a839da1b6ebde282d53818cb8f"
+FB_REDIRECT_URI = "http://https://python-sales.onrender.com//callback"
 
 FB_SCOPES = "pages_show_list,pages_read_engagement,instagram_basic,public_profile"
 
@@ -67,7 +67,6 @@ def callback():
 
 @app.route('/pages')
 def pages():
-    # Step 3: Get user pages
     token = session.get('fb_token')
     if not token:
         return redirect("/")
@@ -80,7 +79,6 @@ def pages():
     if not pages_list:
         return "No pages found. Please create a Facebook Page first."
 
-    # Show list of pages as links
     html = "<h3>Select a Page:</h3>"
     for page in pages_list:
         html += f'<p><a href="/check_page?page_id={page["id"]}">{page["name"]}</a></p>'
