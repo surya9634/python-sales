@@ -1,146 +1,126 @@
-import os
+from flask import Flask, redirect, request, session
 import requests
-from flask import Flask, redirect, request, session, jsonify
 
 app = Flask(__name__)
-app.secret_key = "hello"
+app.secret_key = "hello"  # ✅ CHANGE this to something random and secret
 
-# ======== META API CONFIG ========
+# ======== APP CONFIG ========
 FB_APP_ID = "2101110903689615"
 FB_APP_SECRET = "822f24a839da1b6ebde282d53818cb8f"
-VERIFY_TOKEN = "hello"
-REDIRECT_URI = "https://python-sales.onrender.com/callback"
+VERIFY_TOKEN = "hello"  # ✅ same in FB Developer webhook config
+REDIRECT_URI = "https://python-sales.onrender.com/callback"  # ✅ your Render URL
 
-# ======== HOME PAGE ========
+# ======== OAUTH STEP 1 ========
 @app.route("/")
-def index():
-    fb_login_url = (
-        f"https://www.facebook.com/v12.0/dialog/oauth?"
-        f"client_id={FB_APP_ID}"
+def login():
+    fb_auth_url = (
+        f"https://www.facebook.com/v18.0/dialog/oauth"
+        f"?client_id={FB_APP_ID}"
         f"&redirect_uri={REDIRECT_URI}"
-        f"&scope=pages_show_list,instagram_basic,pages_manage_metadata,pages_read_engagement"
+        f"&scope=pages_show_list,instagram_basic,pages_manage_metadata,"
+        f"pages_read_engagement,pages_manage_engagement"
     )
-    return f'''
-    <h2>📸 Insta AutoLink Demo</h2>
-    <a href="{fb_login_url}">🔗 Connect your Facebook & Instagram</a>
-    '''
+    return redirect(fb_auth_url)
 
-# ======== OAUTH CALLBACK ========
+# ======== OAUTH STEP 2 ========
 @app.route("/callback")
 def callback():
     code = request.args.get("code")
     if not code:
-        return "No code provided."
+        return "Error: Missing code parameter"
 
-    # Exchange code for access token
-    token_response = requests.get(
-        f"https://graph.facebook.com/v12.0/oauth/access_token",
-        params={
-            "client_id": FB_APP_ID,
-            "redirect_uri": REDIRECT_URI,
-            "client_secret": FB_APP_SECRET,
-            "code": code,
-        },
-    ).json()
+    # 1️⃣ Exchange code for short-lived token
+    token_url = (
+        f"https://graph.facebook.com/v18.0/oauth/access_token"
+        f"?client_id={FB_APP_ID}"
+        f"&redirect_uri={REDIRECT_URI}"
+        f"&client_secret={FB_APP_SECRET}"
+        f"&code={code}"
+    )
+    res = requests.get(token_url).json()
+    short_token = res.get("access_token")
+    if not short_token:
+        return f"Error: Couldn't get short-lived token. Response: {res}"
 
-    user_access_token = token_response.get("access_token")
-    if not user_access_token:
-        return "Failed to get access token."
+    # 2️⃣ Exchange for long-lived token
+    long_token_url = (
+        f"https://graph.facebook.com/v18.0/oauth/access_token"
+        f"?grant_type=fb_exchange_token"
+        f"&client_id={FB_APP_ID}"
+        f"&client_secret={FB_APP_SECRET}"
+        f"&fb_exchange_token={short_token}"
+    )
+    long_res = requests.get(long_token_url).json()
+    long_token = long_res.get("access_token")
+    if not long_token:
+        return f"Error: Couldn't get long-lived token. Response: {long_res}"
 
-    # Get user's pages
-    pages_response = requests.get(
-        f"https://graph.facebook.com/v12.0/me/accounts",
-        params={"access_token": user_access_token}
-    ).json()
+    # 3️⃣ Get user's Pages
+    pages_url = f"https://graph.facebook.com/v18.0/me/accounts?access_token={long_token}"
+    pages_res = requests.get(pages_url).json()
+    pages = pages_res.get("data", [])
+    if not pages:
+        return f"Error: No Pages found. Response: {pages_res}"
 
-    if "data" not in pages_response or len(pages_response["data"]) == 0:
-        return "No pages found. Please create a Facebook Page first."
+    # 4️⃣ Use first Page (or you can loop for all)
+    page = pages[0]
+    page_id = page['id']
+    page_token = page['access_token']
 
-    # Pick first Page for demo
-    page = pages_response["data"][0]
-    page_id = page["id"]
-    page_token = page["access_token"]
+    # 5️⃣ Check if IG is connected to Page
+    ig_url = f"https://graph.facebook.com/v18.0/{page_id}?fields=instagram_business_account&access_token={page_token}"
+    ig_res = requests.get(ig_url).json()
+    ig_id = ig_res.get("instagram_business_account", {}).get("id")
 
-    # Store in session
-    session["page_id"] = page_id
-    session["page_token"] = page_token
+    if not ig_id:
+        link_url = f"https://www.facebook.com/{page_id}/settings/?tab=instagram"
+        return f"""
+        <h3>⚠️ Instagram not connected!</h3>
+        <p>Please connect your Instagram Business Account to your Page:</p>
+        <a href="{link_url}" target="_blank">👉 Click to link Instagram</a>
+        """
 
-    # Check if IG is linked
-    page_info = requests.get(
-        f"https://graph.facebook.com/v12.0/{page_id}",
-        params={
-            "fields": "instagram_business_account",
-            "access_token": page_token
-        }
-    ).json()
+    # ✅ Store in session (or DB in real app)
+    session['page_id'] = page_id
+    session['page_token'] = page_token
+    session['ig_id'] = ig_id
 
-    if "instagram_business_account" in page_info:
-        session["ig_id"] = page_info["instagram_business_account"]["id"]
-        return redirect("/setup_done")
-
-    # If IG NOT linked → open settings + start polling
-    fb_page_settings_url = f"https://www.facebook.com/{page_id}/settings/?tab=instagram"
     return f"""
-    <h3>🔗 Your Page is not linked to Instagram yet.</h3>
-    <p>Click <a href="{fb_page_settings_url}" target="_blank">HERE to link Instagram</a> — we’ll detect automatically when you finish!</p>
-    <p>✅ Please keep this page open.</p>
-    <script>
-    setInterval(function() {{
-        fetch('/check_ig_link').then(res => res.json()).then(data => {{
-            if (data.linked) {{
-                window.location.href = "/setup_done";
-            }}
-        }});
-    }}, 5000);
-    </script>
+    <h3>✅ Success!</h3>
+    <p>Page ID: {page_id}</p>
+    <p>Instagram Business ID: {ig_id}</p>
+    <p>Ready for automation. You can close this window.</p>
     """
 
-# ======== POLLING CHECK ========
-@app.route("/check_ig_link")
-def check_ig_link():
-    page_id = session.get("page_id")
-    page_token = session.get("page_token")
-    if not page_id or not page_token:
-        return jsonify({"linked": False})
+# ======== WEBHOOK VERIFICATION ========
+@app.route("/webhook", methods=['GET'])
+def verify_webhook():
+    if request.args.get("hub.mode") == "subscribe" and request.args.get("hub.verify_token") == VERIFY_TOKEN:
+        return request.args.get("hub.challenge"), 200
+    return "Verification failed", 403
 
-    page_info = requests.get(
-        f"https://graph.facebook.com/v12.0/{page_id}",
-        params={
-            "fields": "instagram_business_account",
-            "access_token": page_token
-        }
-    ).json()
-
-    if "instagram_business_account" in page_info:
-        session["ig_id"] = page_info["instagram_business_account"]["id"]
-        return jsonify({"linked": True})
-    else:
-        return jsonify({"linked": False})
-
-# ======== FINAL SETUP DONE ========
-@app.route("/setup_done")
-def setup_done():
-    return """
-    <h2>✅ Instagram is now linked!</h2>
-    <p>You can now set up auto comment replies and DMs.</p>
-    """
-
-# ======== WEBHOOK VERIFY ========
-@app.route("/webhook", methods=["GET", "POST"])
+# ======== WEBHOOK EVENT LISTENER ========
+@app.route("/webhook", methods=['POST'])
 def webhook():
-    if request.method == "GET":
-        mode = request.args.get("hub.mode")
-        token = request.args.get("hub.verify_token")
-        challenge = request.args.get("hub.challenge")
-        if mode == "subscribe" and token == VERIFY_TOKEN:
-            return challenge, 200
-        else:
-            return "Invalid token", 403
-    else:
-        # Here you handle new comments etc.
-        print("Webhook received:", request.json)
-        return "ok", 200
+    data = request.json
+    print("🔔 New webhook event:", data)
 
-# ======== RUN SERVER ========
+    for entry in data.get("entry", []):
+        for change in entry.get("changes", []):
+            value = change.get("value", {})
+            if change.get("field") == "feed" and value.get("item") == "comment":
+                comment_id = value["comment_id"]
+                print(f"New comment ID: {comment_id}")
+
+                # ✅ Example: auto DM logic (replace with your real DM API)
+                page_token = session.get('page_token')
+                ig_id = session.get('ig_id')
+
+                # Here you would send an IG DM or reply
+                # For example, you could call the IG Messaging API
+                print(f"Would reply to comment {comment_id} using IG ID {ig_id}")
+
+    return "OK", 200
+
 if __name__ == "__main__":
     app.run(debug=True)
