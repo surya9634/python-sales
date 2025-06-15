@@ -1,132 +1,132 @@
 import os
-from flask import Flask, redirect, request, jsonify
+from flask import Flask, redirect, request, session
 import requests
+from urllib.parse import urlencode
 
 app = Flask(__name__)
+app.secret_key = "supersecretkey"  # change this to anything random for sessions
 
-# === CONFIG ===
-APP_ID = "2101110903689615"
-APP_SECRET = "822f24a839da1b6ebde282d53818cb8f"
-REDIRECT_URI = "https://python-sales.onrender.com/callback"  # e.g. your Render domain
-SCOPES = [
-    "pages_show_list",
-    "pages_read_engagement",
-    "pages_manage_engagement",
-    "pages_manage_metadata",
-    "instagram_basic",
-    "instagram_manage_messages",
-]
+# === HARDCODED CONFIG ===
+FB_APP_ID = "2101110903689615"
+FB_APP_SECRET = "822f24a839da1b6ebde282d53818cb8f"
+FB_REDIRECT_URI = "http://https://python-sales.onrender.com//callback"
 
-# === In-memory "DB" ===
-USERS = {}  # {user_id: {access_token, page_id, ig_id}}
+FB_SCOPES = "pages_show_list,pages_read_engagement,instagram_basic,public_profile"
 
 # === ROUTES ===
 
-@app.route("/")
-def index():
-    oauth_url = (
-        f"https://www.facebook.com/v19.0/dialog/oauth"
-        f"?client_id={APP_ID}"
-        f"&redirect_uri={REDIRECT_URI}"
-        f"&scope={','.join(SCOPES)}"
-    )
-    return f"<h1>Connect your Instagram</h1><a href='{oauth_url}'>Login with Facebook</a>"
+@app.route('/')
+def home():
+    fb_auth_url = "https://www.facebook.com/v19.0/dialog/oauth?" + urlencode({
+        "client_id": FB_APP_ID,
+        "redirect_uri": FB_REDIRECT_URI,
+        "scope": FB_SCOPES,
+        "response_type": "code"
+    })
+    return f'''
+        <h2>FB+IG Connect</h2>
+        <a href="{fb_auth_url}">Connect with Facebook</a>
+    '''
 
-@app.route("/callback")
+
+@app.route('/callback')
 def callback():
+    # Step 1: Exchange code for short-lived token
     code = request.args.get("code")
-    if not code:
-        return "No code provided.", 400
-
-    # 1️⃣ Exchange code for short-lived user token
-    token_url = (
-        f"https://graph.facebook.com/v19.0/oauth/access_token"
-        f"?client_id={APP_ID}"
-        f"&redirect_uri={REDIRECT_URI}"
-        f"&client_secret={APP_SECRET}"
-        f"&code={code}"
-    )
-    res = requests.get(token_url).json()
-    user_token = res.get("access_token")
-    if not user_token:
-        return f"Error exchanging code: {res}", 400
-
-    # 2️⃣ Get long-lived user token
-    ll_url = (
-        f"https://graph.facebook.com/v19.0/oauth/access_token"
-        f"?grant_type=fb_exchange_token"
-        f"&client_id={APP_ID}"
-        f"&client_secret={APP_SECRET}"
-        f"&fb_exchange_token={user_token}"
-    )
-    res2 = requests.get(ll_url).json()
-    long_token = res2.get("access_token")
-    if not long_token:
-        return f"Error getting long-lived token: {res2}", 400
-
-    # 3️⃣ Get Pages
-    pages_url = f"https://graph.facebook.com/v19.0/me/accounts?access_token={long_token}"
-    res3 = requests.get(pages_url).json()
-    pages = res3.get("data", [])
-    if not pages:
-        return f"No pages found: {res3}", 400
-
-    # Take first Page for demo
-    page = pages[0]
-    page_id = page["id"]
-    page_token = page["access_token"]
-
-    # 4️⃣ Get IG Business Account ID
-    page_details_url = f"https://graph.facebook.com/v19.0/{page_id}?fields=instagram_business_account&access_token={page_token}"
-    res4 = requests.get(page_details_url).json()
-    ig_id = res4.get("instagram_business_account", {}).get("id")
-    if not ig_id:
-        return f"No IG Business Account found: {res4}", 400
-
-    # 5️⃣ Save for later
-    USERS[page_id] = {
-        "page_token": page_token,
-        "ig_id": ig_id,
+    token_url = "https://graph.facebook.com/v19.0/oauth/access_token"
+    token_params = {
+        "client_id": FB_APP_ID,
+        "client_secret": FB_APP_SECRET,
+        "redirect_uri": FB_REDIRECT_URI,
+        "code": code
     }
+    token_response = requests.get(token_url, params=token_params).json()
+    short_token = token_response.get("access_token")
 
-    return f"""
-    <h1>Connected!</h1>
-    <p>Page ID: {page_id}</p>
-    <p>IG Business ID: {ig_id}</p>
-    <p>✅ Now you can use this to get comments & auto reply.</p>
-    """
+    if not short_token:
+        return f"Error getting token: {token_response}"
 
-@app.route("/reply_comments/<page_id>")
-def reply_comments(page_id):
-    creds = USERS.get(page_id)
-    if not creds:
-        return "Page ID not found.", 404
+    # Step 2: Exchange for long-lived token
+    long_token_url = "https://graph.facebook.com/v19.0/oauth/access_token"
+    long_params = {
+        "grant_type": "fb_exchange_token",
+        "client_id": FB_APP_ID,
+        "client_secret": FB_APP_SECRET,
+        "fb_exchange_token": short_token
+    }
+    long_response = requests.get(long_token_url, params=long_params).json()
+    long_token = long_response.get("access_token")
 
-    page_token = creds["page_token"]
-    ig_id = creds["ig_id"]
+    if not long_token:
+        return f"Error exchanging for long-lived token: {long_response}"
 
-    # 1️⃣ Get latest media
-    media_url = f"https://graph.facebook.com/v19.0/{ig_id}/media?fields=id,caption&access_token={page_token}"
-    media = requests.get(media_url).json()
-    media_id = media["data"][0]["id"]
+    session['fb_token'] = long_token
 
-    # 2️⃣ Get comments on latest media
-    comments_url = f"https://graph.facebook.com/v19.0/{media_id}/comments?access_token={page_token}"
-    comments = requests.get(comments_url).json()
-    comments_data = comments.get("data", [])
+    return redirect("/pages")
 
-    # 3️⃣ Reply to each comment with a DM (or comment reply)
-    results = []
-    for comment in comments_data:
-        comment_id = comment["id"]
 
-        # Send comment reply
-        reply_url = f"https://graph.facebook.com/v19.0/{comment_id}/replies"
-        reply_res = requests.post(reply_url, data={
-            "message": "Thank you for your comment!",
-            "access_token": page_token
-        }).json()
+@app.route('/pages')
+def pages():
+    token = session.get('fb_token')
+    if not token:
+        return redirect("/")
 
-        results.append(reply_res)
+    pages_url = f"https://graph.facebook.com/v19.0/me/accounts"
+    pages_response = requests.get(pages_url, params={"access_token": token}).json()
 
-    return jsonify(results)
+    pages_list = pages_response.get("data", [])
+
+    if not pages_list:
+        return "No pages found. Please create a Facebook Page first."
+
+    html = "<h3>Select a Page:</h3>"
+    for page in pages_list:
+        html += f'<p><a href="/check_page?page_id={page["id"]}">{page["name"]}</a></p>'
+    return html
+
+
+@app.route('/check_page')
+def check_page():
+    token = session.get('fb_token')
+    page_id = request.args.get("page_id")
+
+    # Step 4: Get Page access token
+    page_url = f"https://graph.facebook.com/v19.0/{page_id}"
+    page_info = requests.get(page_url, params={
+        "fields": "access_token,name",
+        "access_token": token
+    }).json()
+
+    page_token = page_info.get("access_token")
+
+    if not page_token:
+        return f"Error getting Page token: {page_info}"
+
+    # Step 5: Check if Instagram is linked
+    ig_check_url = f"https://graph.facebook.com/v19.0/{page_id}"
+    ig_info = requests.get(ig_check_url, params={
+        "fields": "instagram_business_account",
+        "access_token": page_token
+    }).json()
+
+    ig_account = ig_info.get("instagram_business_account")
+
+    if ig_account:
+        return f"<h3>✅ Instagram Business Account is connected!</h3><p>ID: {ig_account['id']}</p>"
+    else:
+        connect_url = f"https://www.facebook.com/{page_id}/settings/?tab=linked_accounts"
+        return f'''
+            <h3>❌ Instagram Business Account is NOT connected.</h3>
+            <p>Please connect it manually:</p>
+            <a href="{connect_url}" target="_blank">Connect Instagram to this Page</a>
+        '''
+
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect("/")
+
+
+if __name__ == '__main__':
+    app.run(debug=True)
