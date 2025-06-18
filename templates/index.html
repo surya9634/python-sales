@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>WhatsApp Clone</title>
+</head>
+<body>
+    <h1>WhatsApp Clone (Test)</h1>
+    <input id="phone" placeholder="Phone number"><br>
+    <textarea id="text" placeholder="Message"></textarea><br>
+    <button onclick="sendMessage()">Send</button>
+
+    <h2>Messages:</h2>
+    <ul id="messages"></ul>
+
+    <script>
+        async function sendMessage() {
+            const phone = document.getElementById("phone").value;
+            const text = document.getElementById("text").value;
+            await fetch("/send", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({phone_number: phone, text: text})
+            });
+            loadMessages();
+        }
+
+        async function loadMessages() {
+            const res = await fetch("/messages");
+            const msgs = await res.json();
+            const ul = document.getElementById("messages");
+            ul.innerHTML = "";
+            msgs.forEach(m => {
+                const li = document.createElement("li");
+                li.innerText = `${m.from}: ${m.text}`;
+                ul.appendChild(li);
+            });
+        }
+
+        setInterval(loadMessages, 2000);
+        loadMessages();
+    </script>
+</body>
+</html>
