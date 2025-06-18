@@ -1,70 +1,65 @@
-from flask import Flask, redirect, request, session
+from flask import Flask, request
 import requests
-import os
 
 app = Flask(__name__)
-app.secret_key = "hello"  # ✅ CHANGE this to something random and secret
 
-# ======== APP CONFIG ========
-FB_APP_ID = "2101110903689615"
-FB_APP_SECRET = "822f24a839da1b6ebde282d53818cb8f"
-VERIFY_TOKEN = "hello"  # ✅ same in FB Developer webhook config
-REDIRECT_URI = "https://python-sales.onrender.com/callback"  # ✅ your Render URL
+# === CONFIG ===
+VERIFY_TOKEN = "SurajVerifyToken123"   # you can pick any string, set same in Meta
+ACCESS_TOKEN = "EAAR2slrEDccBO8MTva7RKiVLTvEuszpRQYzpHcBUPPKi996mS9l1vCUGupn6vpYe2Ys8ZC7m8zbsVeH"
+PHONE_NUMBER_ID = "657991800734493"
+GROQ_API_KEY = "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"  # <-- Replace with your real Groq API key
+RECIPIENT_PHONE = "919897940269"    # Without '+'
 
-# Instagram-only permissions
-SCOPES = "instagram_basic,instagram_manage_comments,instagram_manage_messages"
+@app.route("/webhook", methods=["GET", "POST"])
+def webhook():
+    if request.method == "GET":
+        if request.args.get("hub.mode") == "subscribe" and request.args.get("hub.challenge"):
+            if request.args.get("hub.verify_token") == VERIFY_TOKEN:
+                return request.args["hub.challenge"], 200
+            return "Verification token mismatch", 403
+        return "Hello, Suraj!", 200
 
-@app.route("/")
-def home():
-    return f'<a href="/login">Connect your Instagram</a>'
+    if request.method == "POST":
+        data = request.json
+        print("Incoming:", data)
 
-@app.route("/login")
-def login():
-    auth_url = (
-        f"https://www.facebook.com/v19.0/dialog/oauth?"
-        f"client_id={FB_APP_ID}&redirect_uri={REDIRECT_URI}&scope={SCOPES}"
-    )
-    return redirect(auth_url)
+        # Extract message text
+        messages = data['entry'][0]['changes'][0]['value'].get('messages')
+        if messages:
+            msg = messages[0]
+            phone_number = msg['from']
+            user_text = msg['text']['body']
 
-@app.route("/callback")
-def callback():
-    code = request.args.get("code")
-    if not code:
-        return "No code, auth failed"
+            # Call Groq Llama3
+            llama_response = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {GROQ_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "llama3-70b-8192",
+                    "messages": [
+                        {"role": "user", "content": user_text}
+                    ]
+                }
+            )
+            bot_reply = llama_response.json()['choices'][0]['message']['content']
 
-    # Exchange code for short-lived token
-    token_url = (
-        f"https://graph.facebook.com/v19.0/oauth/access_token?"
-        f"client_id={FB_APP_ID}&redirect_uri={REDIRECT_URI}&client_secret={FB_APP_SECRET}&code={code}"
-    )
-    token_data = requests.get(token_url).json()
-    short_token = token_data.get("access_token")
+            # Send reply back on WhatsApp
+            url = f"https://graph.facebook.com/v19.0/{PHONE_NUMBER_ID}/messages"
+            headers = {
+                "Authorization": f"Bearer {ACCESS_TOKEN}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "messaging_product": "whatsapp",
+                "to": phone_number,
+                "text": {"body": bot_reply}
+            }
+            requests.post(url, headers=headers, json=payload)
 
-    # Exchange for long-lived token
-    long_token_url = (
-        f"https://graph.facebook.com/v19.0/oauth/access_token?"
-        f"grant_type=fb_exchange_token&client_id={FB_APP_ID}&client_secret={FB_APP_SECRET}"
-        f"&fb_exchange_token={short_token}"
-    )
-    long_token = requests.get(long_token_url).json().get("access_token")
-
-    # Get IG user id and username
-    user_info = requests.get(
-        f"https://graph.facebook.com/v19.0/me?fields=id,username&access_token={long_token}"
-    ).json()
-
-    # Save to session/db
-    session["ig_id"] = user_info.get("id")
-    session["username"] = user_info.get("username")
-    session["access_token"] = long_token
-
-    return f"""
-    ✅ Connected!<br>
-    IG ID: {user_info.get('id')}<br>
-    Username: {user_info.get('username')}<br>
-    <br>
-    Now you can handle comments & DMs with this token server-side!
-    """
+        return "OK", 200
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=10000)
